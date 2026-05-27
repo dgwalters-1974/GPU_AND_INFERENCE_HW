@@ -1,5 +1,5 @@
 import torch
-
+import numpy as np
 
 # ============================================================================
 # Part 1: Implement PyTorch Functions
@@ -13,7 +13,8 @@ import torch
 def lowest_ai_fn(x: torch.Tensor) -> torch.Tensor:
     """Lowest arithmetic intensity baseline (0 FLOP/Byte)."""
     # TODO (1 line): implement a lowest-AI op
-    pass
+    ans = x.clone()
+    return ans
 
 
 # TASK 1b: Implement a function with configurable arithmetic intensity.
@@ -37,10 +38,16 @@ def make_compute_fn(num_ops: int, compiled: bool = True):
     """Return an eager or compiled function whose work scales with num_ops."""
 
     def fn(x: torch.Tensor) -> torch.Tensor:
-        pass
+        ans = x
+        for _ in range(num_ops):
+            ans = ans * x + x
+        return ans
 
     # TODO (1 line): return either `fn` or `torch.compile(fn)` based on `compiled`
-    pass
+    if compiled:
+        return torch.compile(fn)
+    else:
+        return fn
 
 
 # ============================================================================
@@ -63,7 +70,20 @@ def benchmark_fn(fn, *args, warmup=25, rep=100) -> float:
     torch.cuda.synchronize()
 
     # TODO: time `rep` runs using CUDA events and return median latency (ms)
-    pass
+    
+    times = []
+    for _ in range(rep):
+        
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        
+        start.record()
+        fn(*args)
+        end.record()
+        torch.cuda.synchronize()
+        times.append(start.elapsed_time(end))
+    return float(np.median(times)) # follow type hint
+    
 
 
 # TASK 3: Compute element-wise operation metrics from measured runtime.
@@ -84,9 +104,17 @@ def benchmark_fn(fn, *args, warmup=25, rep=100) -> float:
 
 def compute_elementwise_metrics(num_elements, num_ops, bytes_per_element, ms, variant):
     # TODO: compute total FLOPs, arithmetic intensity, and achieved FLOP/s
-    pass
+    
+    if variant == "compiled":
+        bytes_moved = num_elements * 2 * bytes_per_element
+    else:
+        bytes_moved = num_elements * bytes_per_element * 6 * num_ops 
+    
+    total_flops = num_ops * num_elements * 2
+    ai = total_flops / bytes_moved
+    achieved_flops = total_flops / (ms * 1e-3)
     return total_flops, ai, achieved_flops
-
+    
 
 # ============================================================================
 # Part 3: Short Writeup
