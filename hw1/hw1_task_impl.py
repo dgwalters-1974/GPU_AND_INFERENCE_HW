@@ -124,13 +124,49 @@ def compute_elementwise_metrics(num_elements, num_ops, bytes_per_element, ms, va
 # Q1. Look at the compiled element-wise operations from `1 ops` through `64 ops`.
 # Why does performance rise as arithmetic intensity increases even though the
 # measured runtime changes only a little?
+# 
+#Ans:
+# Compiled runtime is dominated by memory traffic to and from the  HBM.The fused kernel reads
+# x once and writes ans once per element. So bytes moved is fixed by tensor size and independent 
+# of num_ops. At HBM bandwidth, that sets a roughly constant wall-clock time (~0.21 ms here). 
+# Meanwhile total FLOPs = (2N * num_ops) grows linearly with num_ops. Since FLOP/s =  FLOPs / runtime, 
+# the numerator grows while the denominator stays flat, so achieved FLOP/s scales linearly with num_ops. 
+# This only holds while we're memory-bound — once the register calc time catches up with the memory
+# time (past the ridge point), runtime starts increasing too, and FLOP/s saturates near peak.
 #
 # Q2. In one sample run, `matmul 1024x1024` achieved lower FLOP/s than the
 # `128 ops` compiled element-wise operation. Give one or two reasons why that can
 # happen on a large GPU like an H100.
 #
+#Ans:
+# The 1024×1024 matmul is too small to saturate the H100's 132 SMs: it produces only ~64 output    
+# "tiles" (one per 128×128 block), so at most half the SM's are doing useful work at any moment.
+# Kernel launch and sync overheads (~10 µs) also become a non-trivial fraction of the 67 µs
+# runtime. Both effects shrink (in relative terms) as the matmul grows, which is why 2048 and 4096 
+# matmuls climb back toward peak FP32 throughput.
+#
 # Q3. Between `64 ops` and `128 ops`, runtime increases more noticeably than it
 # did for smaller operations. What does that suggest about what resource is
 # becoming the bottleneck?
 #
+#Ans:
+# Up to 64 ops, AI stayed below the ridge of 20 FLOP/B, so the kernel was memory-bound — the SMs   
+# had slack capacity sitting idle while waiting on HBM. Adding more arithmetic was free because it 
+# filled in the idle time. At 128 ops, AI = 32 puts us above the ridge, so the kernel is now       
+# compute-bound and in a different region. The SMs are running at their FP32 throughput limit,
+# and any additional arithmetic translates directly into more time on the compute units.
+# This is why runtime first ticks up noticeably (0.21 to 0.32 ms) — we've stopped getting
+# "free" FLOPs and are now paying for them.
+
+
 # Q4. Why do the eager `ops-K` points look so different from the compiled ones?
+#
+#Ans:
+# In eager mode each operator runs as its own kernel, so every multiply and add in the acc 
+# = acc * x + x loop forces a round trip through HBM. Bytes moved grows linearly with 
+# num_ops — and so do FLOPs, so the ratio (AI) is pinned at a constant ~0.083 FLOP/B regardless
+# of how much arithmetic we do. All the eager points therefore pile up at the same (AI, TFLOP/s)
+# location on the roofline, sitting right on the memory-bandwidth ceiling. 
+# Runtime grows linearly with num_ops because we pay full HBM traffic on every iteration while 
+# achieved FLOP/s is constant at ≈ 0.083*3.35 TB/s ≈ 0.28 TFLOP/s, two orders of magnitude below 
+# what the compiled fused kernel reaches.
